@@ -227,134 +227,97 @@ def Q_rad_net(Ts, r3):
 # SECTION 8  —  CORE STEADY-STATE SOLVER
 # ═══════════════════════════════════════════════════════════════════════════════
 
-def solve(t2, Q_int=Q_INT_DEFAULT):
+def solve(t2, Q_int=Q_INT_DEFAULT, N=20):
     """
     Solve the complete steady-state 1D radial thermal model.
 
-    Solution algorithm (outside-in, exact Kirchhoff integration):
-      1. Q = Q_int throughout the shell (solar/IR energy is deposited only
-         at the outer surface, not inside the cavity).
-      2. Solve outer radiation BC for Ts  [nonlinear, 1 equation in Ts].
-      3. Integrate inward through Layer 3  →  T2p  (r2, CFRP side).
-         Apply contact resistance  →  T2m  (r2, Aerogel side).
-         Integrate inward through Layer 2  →  T1p  (r1, Aerogel side).
-         Apply contact resistance  →  T1m  (r1, Al side).
-         Integrate inward through Layer 1  →  Tw   (r0, inner wall).
-      4. Solve convection equation for Tg  [nonlinear, 1 equation in Tg].
+    Algorithm (outside-in, FD marching with RK2):
+      1. Q = Q_int is constant through the shell at steady state.
+      2. Solve outer radiation BC for Ts  (brentq).
+      3. March dT/dr inward through Layer 3  →  T2p at r2.
+         Apply contact resistance  →  T2m.
+      4. March inward through Layer 2  →  T1p at r1.
+         Apply contact resistance  →  T1m.
+      5. March inward through Layer 1  →  Tw at r0.
+      6. Solve convection equation for Tg  (brentq).
 
     Parameters
     ----------
     t2    : aerogel insulation thickness  [m]
     Q_int : electronics waste heat        [W]  (default 50 W)
+    N     : FD nodes per layer            (default 20)
 
     Returns
     -------
     dict with keys:
-      Tg, Tw                : cavity gas / inner-wall temperature   [K]
-      T1m, T1p              : temperature at r1 (Al side / Aerogel side)  [K]
-      T2m, T2p              : temperature at r2 (Aerogel side / CFRP side) [K]
-      Ts                    : outer surface temperature  [K]
-      Q                     : total heat flow through shell  [W]
-      dTc12, dTc23          : contact-resistance temperature jumps  [K]
-      r0, r1, r2, r3        : layer radii  [m]
-      t2, Q_int             : input parameters (stored for reference)
+      Tg, Tw          : cavity gas / inner-wall temperatures        [K]
+      T1m, T1p        : temp at r1 from Al side / Aerogel side      [K]
+      T2m, T2p        : temp at r2 from Aerogel side / CFRP side    [K]
+      Ts              : outer surface temperature                    [K]
+      Q               : heat flow through shell                      [W]
+      dTc12, dTc23    : contact-resistance temperature jumps        [K]
+      r0..r3          : shell radii                                  [m]
+      r_profile       : radii array for T(r) plot, r0 → r3          [m]
+      T_profile       : temperatures at each profile point          [K]
+                        (interface r values are duplicated to show jumps)
     """
     r0, r1, r2, r3 = get_radii(t2)
-    Q = Q_int   # heat flow is constant and equal to Q_int (steady state)
+    Q = Q_int   # constant heat flow = electronics source (steady state)
 
-    # ── Step 1: outer surface temperature ────────────────────────────────────
-    # Solve Q_rad_net(Ts, r3) = Q  for Ts
-    Ts = brentq(lambda T: Q_rad_net(T, r3) - Q, 100.0, 1500.0, xtol=1e-8)
+    # ── Step 1: outer surface temperature from radiation balance ──────────────
+    Ts = brentq(lambda T: Q_rad_net(T, r3) - Q, 100.0, 1500.0)
 
-    # ── Step 2: inward integration through conduction layers ─────────────────
+    # ── Step 2: march inward through Layer 3 (CFRP) ──────────────────────────
+    r_L3, T_L3 = _march_layer(r3, r2, Ts, k3, Q, N)
+    T2p = T_L3[-1]   # temp at r2, CFRP side
 
-    # Layer 3 (CFRP):  Ts at r3  →  T2p at r2
-    #   Φ₃(T2p) = Φ₃(Ts) + Q/(4π) · (1/r2 − 1/r3)
-    phi_T2p = phi3(Ts) + Q / (4 * np.pi) * (1/r2 - 1/r3)
-    T2p = _invert_phi(phi3, phi_T2p)
-
-    # Contact resistance at r2  (Aerogel side is hotter)
-    dTc23 = Q * RC23_PP / (4 * np.pi * r2**2)
+    # Contact resistance at r2 (Aerogel side is hotter)
+    dTc23 = Q * RC23_PP / (4.0 * np.pi * r2**2)
     T2m   = T2p + dTc23
 
-    # Layer 2 (Aerogel):  T2m at r2  →  T1p at r1
-    phi_T1p = phi2(T2m) + Q / (4 * np.pi) * (1/r1 - 1/r2)
-    T1p = _invert_phi(phi2, phi_T1p)
+    # ── Step 3: march inward through Layer 2 (Aerogel) ───────────────────────
+    r_L2, T_L2 = _march_layer(r2, r1, T2m, k2, Q, N)
+    T1p = T_L2[-1]   # temp at r1, Aerogel side
 
-    # Contact resistance at r1  (Al side is hotter)
-    dTc12 = Q * RC12_PP / (4 * np.pi * r1**2)
+    # Contact resistance at r1 (Al side is hotter)
+    dTc12 = Q * RC12_PP / (4.0 * np.pi * r1**2)
     T1m   = T1p + dTc12
 
-    # Layer 1 (Al):  T1m at r1  →  Tw at r0
-    phi_Tw = phi1(T1m) + Q / (4 * np.pi) * (1/r0 - 1/r1)
-    Tw = _invert_phi(phi1, phi_Tw)
+    # ── Step 4: march inward through Layer 1 (Al) ────────────────────────────
+    r_L1, T_L1 = _march_layer(r1, r0, T1m, k1, Q, N)
+    Tw = T_L1[-1]   # inner wall temperature T(r0)
 
-    # ── Step 3: cavity gas temperature ───────────────────────────────────────
-    # Q_int = h_i(Tg, Tw) · 4π r0² · (Tg − Tw)  →  solve for Tg
-    def conv_eq(Tg):
-        return h_inner(Tg, Tw) * 4 * np.pi * r0**2 * (Tg - Tw) - Q_int
+    # ── Step 5: cavity gas temperature from convection balance ────────────────
+    # Q_int = h_i(Tg, Tw) · 4π r0² · (Tg − Tw)   →  solve for Tg
+    Tg = brentq(
+        lambda T: h_inner(T, Tw) * 4.0 * np.pi * r0**2 * (T - Tw) - Q_int,
+        Tw + 1e-3, Tw + 2000.0
+    )
 
-    Tg = brentq(conv_eq, Tw + 1e-3, Tw + 2000.0, xtol=1e-8)
+    # ── Build outward-ordered profile (r0 → r3) ───────────────────────────────
+    # Each layer was marched inward → reverse to outward order.
+    # At r1: L1 ends at T1m, L2 starts at T1p  (contact jump visible in plot)
+    # At r2: L2 ends at T2m, L3 starts at T2p  (contact jump visible in plot)
+    r_profile = np.concatenate([r_L1[::-1], r_L2[::-1], r_L3[::-1]])
+    T_profile = np.concatenate([T_L1[::-1], T_L2[::-1], T_L3[::-1]])
 
     return {
-        'Tg':   Tg,   'Tw':   Tw,
-        'T1m':  T1m,  'T1p':  T1p,
-        'T2m':  T2m,  'T2p':  T2p,
-        'Ts':   Ts,   'Q':    Q,
+        'Tg': Tg,  'Tw': Tw,
+        'T1m': T1m, 'T1p': T1p,
+        'T2m': T2m, 'T2p': T2p,
+        'Ts': Ts,  'Q': Q,
         'dTc12': dTc12, 'dTc23': dTc23,
         'r0': r0, 'r1': r1, 'r2': r2, 'r3': r3,
         't2': t2, 'Q_int': Q_int,
+        'r_profile': r_profile,
+        'T_profile': T_profile,
+        'N': N,
     }
 
 
-# ═══════════════════════════════════════════════════════════════════════════════
-# SECTION 9  —  RADIAL TEMPERATURE PROFILE  T(r)
-# ═══════════════════════════════════════════════════════════════════════════════
-
-def temperature_profile(sol, n_per_layer=100):
-    """
-    Compute the full radial temperature distribution T(r) across all layers.
-
-    Uses the same Kirchhoff formula anchored at each layer's inner boundary.
-    Because each layer's linspace includes both endpoints, the interface radii
-    appear TWICE with different T values — this naturally shows the contact-
-    resistance temperature jumps in the plot.
-
-    Parameters
-    ----------
-    sol         : dict returned by solve()
-    n_per_layer : number of radial sample points per layer  (default 100)
-
-    Returns
-    -------
-    r_arr : np.ndarray  [m]   — radii (length = 3 × n_per_layer)
-    T_arr : np.ndarray  [K]   — temperatures at each radius
-    """
-    r0, r1, r2, r3 = sol['r0'], sol['r1'], sol['r2'], sol['r3']
-    Tw, T1p, T2p, Q = sol['Tw'], sol['T1p'], sol['T2p'], sol['Q']
-
-    r_arr, T_arr = [], []
-
-    # Layer 1 — anchored at inner boundary (r0, Tw)
-    for r in np.linspace(r0, r1, n_per_layer):
-        phi_val = phi1(Tw) + Q / (4 * np.pi) * (1/r - 1/r0)
-        r_arr.append(r)
-        T_arr.append(_invert_phi(phi1, phi_val))
-
-    # Layer 2 — anchored at inner boundary (r1, T1p)
-    # Note: T1p < T1m due to contact resistance; the jump appears in the plot.
-    for r in np.linspace(r1, r2, n_per_layer):
-        phi_val = phi2(T1p) + Q / (4 * np.pi) * (1/r - 1/r1)
-        r_arr.append(r)
-        T_arr.append(_invert_phi(phi2, phi_val))
-
-    # Layer 3 — anchored at inner boundary (r2, T2p)
-    for r in np.linspace(r2, r3, n_per_layer):
-        phi_val = phi3(T2p) + Q / (4 * np.pi) * (1/r - 1/r2)
-        r_arr.append(r)
-        T_arr.append(_invert_phi(phi3, phi_val))
-
-    return np.array(r_arr), np.array(T_arr)
+def temperature_profile(sol):
+    """Return the pre-computed (r, T) profile arrays from a solve() result."""
+    return sol['r_profile'], sol['T_profile']
 
 
 # ═══════════════════════════════════════════════════════════════════════════════

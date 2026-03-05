@@ -148,18 +148,18 @@ def task_D(t2_max):
     print(f"TASK D — Radial Temperature Distribution  (t₂ = {t2_max*1e3:.2f} mm)")
     print("═" * 60)
 
-    sol = base.solve(t2_max)
-    r_arr, T_arr = base.temperature_profile(sol, n_per_layer=200)
+    sol = base.solve(t2_max, N=100)   # N=100 gives smooth profile
+    r_arr, T_arr = base.temperature_profile(sol)
 
     r0, r1, r2, r3 = sol['r0'], sol['r1'], sol['r2'], sol['r3']
-    n = 200   # n_per_layer used above
+    N = sol['N']
 
     # ── Report interface values ──
-    # End of Layer 1 (r = r1, Al side)  and start of Layer 2 (r = r1, Aerogel side)
-    T_r1_minus = T_arr[n - 1]    # last point of Layer 1
-    T_r1_plus  = T_arr[n]        # first point of Layer 2
-    T_r2_minus = T_arr[2*n - 1]  # last point of Layer 2
-    T_r2_plus  = T_arr[2*n]      # first point of Layer 3
+    # Each layer has N points; interfaces appear at index N-1 and N (duplicate r)
+    T_r1_minus = T_arr[N - 1]      # end of Layer 1 (Al side at r1)
+    T_r1_plus  = T_arr[N]          # start of Layer 2 (Aerogel side at r1)
+    T_r2_minus = T_arr[2*N - 1]    # end of Layer 2 (Aerogel side at r2)
+    T_r2_plus  = T_arr[2*N]        # start of Layer 3 (CFRP side at r2)
 
     print(f"\n  Interface at r1 = {r1*1e3:.2f} mm:")
     print(f"    T(r1⁻) [Al   side] = {T_r1_minus:.4f} K")
@@ -174,10 +174,9 @@ def task_D(t2_max):
     # ── Plot T(r) ──
     fig, ax = plt.subplots(figsize=(9, 5))
 
-    r_mm = r_arr * 1e3  # convert to mm for readability
-    r_arr_L1 = r_arr[:n];      T_arr_L1 = T_arr[:n]
-    r_arr_L2 = r_arr[n:2*n];   T_arr_L2 = T_arr[n:2*n]
-    r_arr_L3 = r_arr[2*n:];    T_arr_L3 = T_arr[2*n:]
+    r_arr_L1 = r_arr[:N];      T_arr_L1 = T_arr[:N]
+    r_arr_L2 = r_arr[N:2*N];   T_arr_L2 = T_arr[N:2*N]
+    r_arr_L3 = r_arr[2*N:];    T_arr_L3 = T_arr[2*N:]
 
     # Plot each layer with a distinct color
     ax.plot(r_arr_L1 * 1e3, T_arr_L1, color='tab:blue',   label='Layer 1: Al liner')
