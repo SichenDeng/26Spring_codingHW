@@ -1,6 +1,8 @@
 """
 cp1_base.py — 530.334 Heat Transfer, CP1
 Satellite thermal model: 1D radial steady-state solver.
+Method: Finite-Difference Method (FDM) with Picard iteration.
+Convergence criterion: max node temperature change < 1e-6 K.
 """
 
 import numpy as np
@@ -29,23 +31,6 @@ def k2(T):
 
 def k3(T):
     return 6.0 * (1.0 + 1.0e-4 * (T - 300.0))
-
-# FD marching: integrate dT/dr = -Q/(4*pi*r^2*k(T)) using RK2
-def _march_layer(r_start, r_end, T_start, k_func, Q, N=20):
-    r_arr = np.linspace(r_start, r_end, N)
-    dr = r_arr[1] - r_arr[0]
-    T_arr = np.zeros(N)
-    T_arr[0] = T_start
-
-    for i in range(N - 1):
-        r, T = r_arr[i], T_arr[i]
-        dTdr1 = -Q / (4.0 * np.pi * r**2 * k_func(T))
-        r_m = r + 0.5 * dr
-        T_m = T + 0.5 * dr * dTdr1
-        dTdr2 = -Q / (4.0 * np.pi * r_m**2 * k_func(T_m))
-        T_arr[i + 1] = T + dr * dTdr2
-
-    return r_arr, T_arr
 
 # Contact resistances [m^2*K/W]
 RC12_PP = 2.0e-4  # Al / Aerogel at r1
@@ -87,53 +72,180 @@ def Q_rad_net(Ts, r3):
                 - a * G_SOL_FAC * G_SOL
                 - e * G_MERC_FAC * G_MERC)
 
-# Core solver: march from outer surface inward
-def solve(t2, Q_int=Q_INT_DEFAULT, N=20):
+def solve(t2, Q_int=Q_INT_DEFAULT, N=20, tol=1e-6, max_iter=500, omega=1.0):
     r0, r1, r2, r3 = get_radii(t2)
     Q = Q_int
 
-    # Outer surface temp from radiation balance
+    # Outer surface temperature from radiation balance
     Ts = brentq(lambda T: Q_rad_net(T, r3) - Q, 100.0, 1500.0)
 
-    # Layer 3 (CFRP) inward
-    r_L3, T_L3 = _march_layer(r3, r2, Ts, k3, Q, N)
-    T2p = T_L3[-1]
+    # FDM node arrays for each layer
+    r_L1 = np.linspace(r0, r1, N)
+    r_L2 = np.linspace(r1, r2, N)
+    r_L3 = np.linspace(r2, r3, N)
+    dr1 = r_L1[1] - r_L1[0]
+    dr2 = r_L2[1] - r_L2[0]
+    dr3 = r_L3[1] - r_L3[0]
 
-    # Contact resistance at r2
-    dTc23 = Q * RC23_PP / (4.0 * np.pi * r2**2)
-    T2m = T2p + dTc23
+    # Unknowns: [Tg, T1[0..N-1], T2[0..N-1], T3[0..N-1]]
+    n_total = 1 + 3 * N
+    i1 = 1
+    i2 = N + 1
+    i3 = 2 * N + 1
 
-    # Layer 2 (Aerogel) inward
-    r_L2, T_L2 = _march_layer(r2, r1, T2m, k2, Q, N)
-    T1p = T_L2[-1]
+    T_vec = np.zeros(n_total)
+    T_vec[0]       = Ts + 40
+    T_vec[i1:i1+N] = np.linspace(Ts + 30, Ts + 20, N)
+    T_vec[i2:i2+N] = np.linspace(Ts + 20, Ts + 5,  N)
+    T_vec[i3:i3+N] = np.linspace(Ts + 5,  Ts,      N)
 
-    # Contact resistance at r1
-    dTc12 = Q * RC12_PP / (4.0 * np.pi * r1**2)
-    T1m = T1p + dTc12
+    converged = False
+    for iteration in range(max_iter):
+        T_old = T_vec.copy()
 
-    # Layer 1 (Al) inward
-    r_L1, T_L1 = _march_layer(r1, r0, T1m, k1, Q, N)
-    Tw = T_L1[-1]
+        Tg_c = T_old[0]
+        T1c  = T_old[i1:i1+N]
+        T2c  = T_old[i2:i2+N]
+        T3c  = T_old[i3:i3+N]
 
-    # Cavity gas temp from convection balance
-    Tg = brentq(
-        lambda T: h_inner(T, Tw) * 4.0 * np.pi * r0**2 * (T - Tw) - Q_int,
-        Tw + 1e-3, Tw + 2000.0
-    )
+        A = np.zeros((n_total, n_total))
+        b = np.zeros(n_total)
 
-    # Build outward profile (reverse each layer)
-    r_profile = np.concatenate([r_L1[::-1], r_L2[::-1], r_L3[::-1]])
-    T_profile = np.concatenate([T_L1[::-1], T_L2[::-1], T_L3[::-1]])
+        # Row 0: cavity gas energy balance
+        hi = h_inner(Tg_c, T1c[0])
+        a0 = hi * r0**2
+        A[0, 0]  =  a0
+        A[0, i1] = -a0
+        b[0] = Q_int / (4.0 * np.pi)
+
+        # Layer 1 (Al): node 0 — convection in = conduction out
+        r_ph = 0.5 * (r_L1[0] + r_L1[1])
+        k_ph = k1(0.5 * (T1c[0] + T1c[1]))
+        cp = r_ph**2 * k_ph / dr1
+        A[i1, 0]    =  a0
+        A[i1, i1]   = -(a0 + cp)
+        A[i1, i1+1] =  cp
+
+        # Interior nodes
+        for i in range(1, N - 1):
+            r_ph = 0.5 * (r_L1[i] + r_L1[i+1])
+            r_mh = 0.5 * (r_L1[i] + r_L1[i-1])
+            kp = k1(0.5 * (T1c[i] + T1c[i+1]))
+            km = k1(0.5 * (T1c[i] + T1c[i-1]))
+            cp = r_ph**2 * kp / dr1
+            cm = r_mh**2 * km / dr1
+            row = i1 + i
+            A[row, row - 1] =  cm
+            A[row, row]     = -(cm + cp)
+            A[row, row + 1] =  cp
+
+        # Node N-1 at r1: conduction in = contact resistance out
+        r_mh = 0.5 * (r_L1[N-2] + r_L1[N-1])
+        km = k1(0.5 * (T1c[N-2] + T1c[N-1]))
+        cm = r_mh**2 * km / dr1
+        cr = r1**2 / RC12_PP
+        row = i1 + N - 1
+        A[row, row - 1] =  cm
+        A[row, row]     = -(cm + cr)
+        A[row, i2]      =  cr
+
+        # Layer 2 (Aerogel): node 0 — contact resistance in = conduction out
+        r_ph = 0.5 * (r_L2[0] + r_L2[1])
+        kp = k2(0.5 * (T2c[0] + T2c[1]))
+        cp = r_ph**2 * kp / dr2
+        cr = r1**2 / RC12_PP
+        A[i2, i1 + N - 1] =  cr
+        A[i2, i2]          = -(cr + cp)
+        A[i2, i2 + 1]     =  cp
+
+        # Interior nodes
+        for i in range(1, N - 1):
+            r_ph = 0.5 * (r_L2[i] + r_L2[i+1])
+            r_mh = 0.5 * (r_L2[i] + r_L2[i-1])
+            kp = k2(0.5 * (T2c[i] + T2c[i+1]))
+            km = k2(0.5 * (T2c[i] + T2c[i-1]))
+            cp = r_ph**2 * kp / dr2
+            cm = r_mh**2 * km / dr2
+            row = i2 + i
+            A[row, row - 1] =  cm
+            A[row, row]     = -(cm + cp)
+            A[row, row + 1] =  cp
+
+        # Node N-1 at r2: conduction in = contact resistance out
+        r_mh = 0.5 * (r_L2[N-2] + r_L2[N-1])
+        km = k2(0.5 * (T2c[N-2] + T2c[N-1]))
+        cm = r_mh**2 * km / dr2
+        cr = r2**2 / RC23_PP
+        row = i2 + N - 1
+        A[row, row - 1] =  cm
+        A[row, row]     = -(cm + cr)
+        A[row, i3]      =  cr
+
+        # Layer 3 (CFRP): node 0 — contact resistance in = conduction out
+        r_ph = 0.5 * (r_L3[0] + r_L3[1])
+        kp = k3(0.5 * (T3c[0] + T3c[1]))
+        cp = r_ph**2 * kp / dr3
+        cr = r2**2 / RC23_PP
+        A[i3, i2 + N - 1] =  cr
+        A[i3, i3]          = -(cr + cp)
+        A[i3, i3 + 1]     =  cp
+
+        # Interior nodes
+        for i in range(1, N - 1):
+            r_ph = 0.5 * (r_L3[i] + r_L3[i+1])
+            r_mh = 0.5 * (r_L3[i] + r_L3[i-1])
+            kp = k3(0.5 * (T3c[i] + T3c[i+1]))
+            km = k3(0.5 * (T3c[i] + T3c[i-1]))
+            cp = r_ph**2 * kp / dr3
+            cm = r_mh**2 * km / dr3
+            row = i3 + i
+            A[row, row - 1] =  cm
+            A[row, row]     = -(cm + cp)
+            A[row, row + 1] =  cp
+
+        # Node N-1 at r3: T = Ts
+        row = i3 + N - 1
+        A[row, row] = 1.0
+        b[row] = Ts
+
+        T_new = np.linalg.solve(A, b)
+        T_vec = omega * T_new + (1.0 - omega) * T_old
+
+        if np.max(np.abs(T_vec - T_old)) < tol:
+            converged = True
+            break
+
+    if not converged:
+        print(f"WARNING: Picard did not converge in {max_iter} iterations "
+              f"(max dT = {np.max(np.abs(T_vec - T_old)):.2e} K)")
+
+    Tg     = T_vec[0]
+    T1_arr = T_vec[i1:i1+N]
+    T2_arr = T_vec[i2:i2+N]
+    T3_arr = T_vec[i3:i3+N]
+
+    Tw  = T1_arr[0]
+    T1m = T1_arr[-1]
+    T1p = T2_arr[0]
+    T2m = T2_arr[-1]
+    T2p = T3_arr[0]
+
+    dTc12 = T1m - T1p
+    dTc23 = T2m - T2p
+
+    r_profile = np.concatenate([r_L1, r_L2, r_L3])
+    T_profile = np.concatenate([T1_arr, T2_arr, T3_arr])
 
     return {
         'Tg': Tg, 'Tw': Tw,
         'T1m': T1m, 'T1p': T1p,
         'T2m': T2m, 'T2p': T2p,
-        'Ts': Ts, 'Q': Q,
+        'Ts': T3_arr[-1], 'Q': Q,
         'dTc12': dTc12, 'dTc23': dTc23,
         'r0': r0, 'r1': r1, 'r2': r2, 'r3': r3,
         't2': t2, 'Q_int': Q_int,
         'r_profile': r_profile, 'T_profile': T_profile, 'N': N,
+        'iterations': iteration + 1,
     }
 
 def temperature_profile(sol):
@@ -142,9 +254,10 @@ def temperature_profile(sol):
 if __name__ == '__main__':
     sol = solve(t2=0.010)
     print("Baseline (t2=10mm, Q_int=50W)")
+    print(f"Converged in {sol['iterations']} Picard iterations")
     print(f"Tg = {sol['Tg']:.3f} K, {'PASS' if sol['Tg'] <= 360 else 'FAIL'}")
     print(f"Tw = {sol['Tw']:.3f} K")
     print(f"Ts = {sol['Ts']:.3f} K, {'PASS' if sol['Ts'] <= 450 else 'FAIL'}")
-    print(f"Q = {sol['Q']:.1f} W")
+    print(f"Q  = {sol['Q']:.1f} W")
     print(f"dTc12 = {sol['dTc12']:.4f} K")
     print(f"dTc23 = {sol['dTc23']:.4f} K")

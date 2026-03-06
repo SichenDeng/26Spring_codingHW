@@ -9,7 +9,7 @@ import cp1_base as base
 
 
 def task_B():
-    print("\nTASK B -- Baseline (t2=10mm, Q_int=50W)")
+    print("\nTASK B")
     sol = base.solve(t2=0.010)
 
     print(f"Tg = {sol['Tg']:.3f} K, {'PASS' if sol['Tg'] <= 360 else 'FAIL'}")
@@ -25,7 +25,7 @@ def task_B():
 
 
 def task_C():
-    print("\nTASK C -- Max insulation thickness")
+    print("\nTASK C")
     t2_arr = np.linspace(base.T2_MIN, base.T2_MAX, 200)
     Tg_arr = np.zeros_like(t2_arr)
     Ts_arr = np.zeros_like(t2_arr)
@@ -43,23 +43,36 @@ def task_C():
     else:
         print("No feasible t2 found")
 
-    fig, ax = plt.subplots(figsize=(8, 5))
-    ax.plot(t2_arr * 1e3, Tg_arr, 'r-', label='Tg (cavity gas)')
-    ax.plot(t2_arr * 1e3, Ts_arr, 'b-', label='Ts (outer surface)')
-    ax.axhline(360, color='r', linestyle='--', label='Tg limit (360 K)')
-    ax.axhline(450, color='b', linestyle='--', label='Ts limit (450 K)')
-    ax.set_xlabel('Aerogel Thickness t2 (mm)')
-    ax.set_ylabel('Temperature (K)')
-    ax.set_title('Task C: Temperature vs Aerogel Thickness')
-    ax.legend()
-    plt.tight_layout()
-    plt.savefig('task_C.png')
+    fig1, ax1 = plt.subplots(figsize=(7, 5))
+    ax1.plot(t2_arr * 1e3, Tg_arr, 'b-', linewidth=1.5)
+    ax1.axhline(360, color='r', linestyle='--', linewidth=1, label='360 K limit')
+    if t2_max is not None:
+        ax1.axvline(t2_max * 1e3, color='gray', linestyle=':', linewidth=0.8)
+    ax1.set_xlabel('Aerogel thickness $t_2$ (mm)')
+    ax1.set_ylabel('$T_g$ (K)')
+    ax1.set_title('Cavity Gas Temperature vs Aerogel Thickness')
+    ax1.legend()
+    ax1.grid(True, alpha=0.3)
+    fig1.tight_layout()
+    fig1.savefig('task_C_Tg.png', dpi=150)
+
+    fig2, ax2 = plt.subplots(figsize=(7, 5))
+    ax2.plot(t2_arr * 1e3, Ts_arr, 'b-', linewidth=1.5)
+    ax2.axhline(450, color='r', linestyle='--', linewidth=1, label='450 K limit')
+    ax2.set_xlabel('Aerogel thickness $t_2$ (mm)')
+    ax2.set_ylabel('$T_s$ (K)')
+    ax2.set_title('Outer Surface Temperature vs Aerogel Thickness')
+    ax2.legend()
+    ax2.grid(True, alpha=0.3)
+    fig2.tight_layout()
+    fig2.savefig('task_C_Ts.png', dpi=150)
+
     plt.show()
     return t2_max
 
 
 def task_D(t2_max):
-    print(f"\nTASK D -- T(r) profile (t2={t2_max*1e3:.2f}mm)")
+    print(f"\nTASK D")
     sol = base.solve(t2_max, N=100)
     r_arr, T_arr = base.temperature_profile(sol)
     N = sol['N']
@@ -84,7 +97,7 @@ def task_D(t2_max):
 
 
 def task_E(t2_max):
-    print(f"\nTASK E -- Sensitivity (t2={t2_max*1e3:.2f}mm)")
+    print(f"\nTASK E")
     Q_arr = np.linspace(20.0, 200.0, 200)
     Tg_arr = np.zeros_like(Q_arr)
 
