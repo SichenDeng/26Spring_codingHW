@@ -1,7 +1,3 @@
-"""
-cp1_tasks.py — Tasks B-E for CP1.
-"""
-
 import sys
 import numpy as np
 import matplotlib.pyplot as plt
@@ -41,7 +37,7 @@ def task_C():
     if t2_max is not None:
         print(f"t2_max = {t2_max*1e3:.2f} mm")
     else:
-        print("No feasible t2 found")
+        print("No t2 found")
 
     fig1, ax1 = plt.subplots(figsize=(7, 5))
     ax1.plot(t2_arr * 1e3, Tg_arr, 'b-', linewidth=1.5)
@@ -50,7 +46,6 @@ def task_C():
         ax1.axvline(t2_max * 1e3, color='gray', linestyle=':', linewidth=0.8)
     ax1.set_xlabel('Aerogel thickness $t_2$ (mm)')
     ax1.set_ylabel('$T_g$ (K)')
-    ax1.set_title('Cavity Gas Temperature vs Aerogel Thickness')
     ax1.legend()
     ax1.grid(True, alpha=0.3)
     fig1.tight_layout()
@@ -61,7 +56,6 @@ def task_C():
     ax2.axhline(450, color='r', linestyle='--', linewidth=1, label='450 K limit')
     ax2.set_xlabel('Aerogel thickness $t_2$ (mm)')
     ax2.set_ylabel('$T_s$ (K)')
-    ax2.set_title('Outer Surface Temperature vs Aerogel Thickness')
     ax2.legend()
     ax2.grid(True, alpha=0.3)
     fig2.tight_layout()
@@ -88,7 +82,6 @@ def task_D(t2_max):
     ax.axvline(sol['r2'] * 1e3, color='gray', linestyle='--', linewidth=0.8)
     ax.set_xlabel('Radius r (mm)')
     ax.set_ylabel('Temperature T (K)')
-    ax.set_title(f'Task D: Radial Temperature Distribution (t2 = {t2_max*1e3:.1f} mm)')
     ax.legend()
     plt.tight_layout()
     plt.savefig('task_D.png')
@@ -119,7 +112,6 @@ def task_E(t2_max):
     ax.axhline(360, color='k', linestyle='--', label='Tg limit (360 K)')
     ax.set_xlabel('Electronics Power Q_int (W)')
     ax.set_ylabel('Cavity Gas Temperature Tg (K)')
-    ax.set_title(f'Task E: Tg Sensitivity to Q_int (t2 = {t2_max*1e3:.1f} mm)')
     ax.legend()
     plt.tight_layout()
     plt.savefig('task_E.png')
@@ -157,5 +149,3 @@ if __name__ == '__main__':
         if t2_max is None:
             t2_max = _get_t2_max()
         task_E(t2_max)
-
-    print("\nDone.")

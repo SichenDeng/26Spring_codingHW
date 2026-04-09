@@ -1,18 +1,11 @@
-"""
-cp1_base.py — 530.334 Heat Transfer, CP1
-Satellite thermal model: 1D radial steady-state solver.
-Method: Finite-Difference Method (FDM) with Picard iteration.
-Convergence criterion: max node temperature change < 1e-6 K.
-"""
-
 import numpy as np
 from scipy.optimize import brentq
 
-# Geometry
-R0 = 0.30       # inner cavity radius [m]
-T1 = 0.002      # Layer 1 Al liner thickness [m]
-T3 = 0.003      # Layer 3 CFRP shell thickness [m]
-T2_MIN = 0.001  # aerogel thickness bounds [m]
+# Geometry [m]
+R0 = 0.30       # inner cavity radius
+T1 = 0.002      # Layer 1
+T3 = 0.003      # Layer 3
+T2_MIN = 0.001  # aerogel thickness range
 T2_MAX = 0.040
 
 def get_radii(t2):
@@ -21,13 +14,13 @@ def get_radii(t2):
     r3 = r2 + T3
     return R0, r1, r2, r3
 
-# Temperature-dependent conductivities [W/m-K]
+# Temperature dependent conductivities
 def k1(T):
-    return 160.0 * (1.0 - 2.0e-4 * (T - 300.0))
+    return 160.0 * (1.0 - 2.0e-4 *(T - 300.0))
 
 def k2(T):
     dT = T - 300.0
-    return 0.035 + 2.0e-4 * dT + 1.0e-7 * dT**2
+    return 0.035 + 2.0e-4 *dT + 1.0e-7 * dT**2
 
 def k3(T):
     return 6.0 * (1.0 + 1.0e-4 * (T - 300.0))
@@ -38,13 +31,13 @@ RC23_PP = 1.0e-4  # Aerogel / CFRP at r2
 
 Q_INT_DEFAULT = 50.0  # electronics waste heat [W]
 
-# Inner boundary: natural convection
-KG        = 0.030
-NU_GAS    = 1.7e-5
+# Inner boundary: given gas propertise
+KG = 0.030
+NU_GAS= 1.7e-5
 ALPHA_GAS = 2.4e-5
-BETA      = 1.0 / 300.0
-LC        = R0
-G_EFF     = 0.02
+BETA = 1.0 / 300.0
+LC = R0
+G_EFF = 0.02
 
 def h_inner(Tg, Tw):
     Ra = G_EFF * BETA * abs(Tg - Tw) * LC**3 / (NU_GAS * ALPHA_GAS)
@@ -52,11 +45,11 @@ def h_inner(Tg, Tw):
     return Nu * KG / LC
 
 # Outer boundary: radiation
-SIGMA      = 5.670e-8
-T_SPACE    = 3.0
-G_SOL      = 9100.0
+SIGMA = 5.670e-8
+T_SPACE = 3.0
+G_SOL = 9100.0
 G_SOL_FAC  = 0.25
-G_MERC     = 1200.0
+G_MERC= 1200.0
 G_MERC_FAC = 0.25
 
 def alpha_s(T):
@@ -94,7 +87,7 @@ def solve(t2, Q_int=Q_INT_DEFAULT, N=20, tol=1e-6, max_iter=500, omega=1.0):
     i3 = 2 * N + 1
 
     T_vec = np.zeros(n_total)
-    T_vec[0]       = Ts + 40
+    T_vec[0] = Ts + 40
     T_vec[i1:i1+N] = np.linspace(Ts + 30, Ts + 20, N)
     T_vec[i2:i2+N] = np.linspace(Ts + 20, Ts + 5,  N)
     T_vec[i3:i3+N] = np.linspace(Ts + 5,  Ts,      N)
@@ -104,27 +97,27 @@ def solve(t2, Q_int=Q_INT_DEFAULT, N=20, tol=1e-6, max_iter=500, omega=1.0):
         T_old = T_vec.copy()
 
         Tg_c = T_old[0]
-        T1c  = T_old[i1:i1+N]
-        T2c  = T_old[i2:i2+N]
-        T3c  = T_old[i3:i3+N]
+        T1c = T_old[i1:i1+N]
+        T2c = T_old[i2:i2+N]
+        T3c = T_old[i3:i3+N]
 
         A = np.zeros((n_total, n_total))
         b = np.zeros(n_total)
 
-        # Row 0: cavity gas energy balance
+        # cavity gas energy balance
         hi = h_inner(Tg_c, T1c[0])
         a0 = hi * r0**2
         A[0, 0]  =  a0
         A[0, i1] = -a0
         b[0] = Q_int / (4.0 * np.pi)
 
-        # Layer 1 (Al): node 0 — convection in = conduction out
+        # layer 1
         r_ph = 0.5 * (r_L1[0] + r_L1[1])
         k_ph = k1(0.5 * (T1c[0] + T1c[1]))
         cp = r_ph**2 * k_ph / dr1
-        A[i1, 0]    =  a0
-        A[i1, i1]   = -(a0 + cp)
-        A[i1, i1+1] =  cp
+        A[i1, 0] = a0
+        A[i1, i1] = -(a0 + cp)
+        A[i1, i1+1] = cp
 
         # Interior nodes
         for i in range(1, N - 1):
@@ -135,60 +128,60 @@ def solve(t2, Q_int=Q_INT_DEFAULT, N=20, tol=1e-6, max_iter=500, omega=1.0):
             cp = r_ph**2 * kp / dr1
             cm = r_mh**2 * km / dr1
             row = i1 + i
-            A[row, row - 1] =  cm
-            A[row, row]     = -(cm + cp)
-            A[row, row + 1] =  cp
+            A[row, row - 1] = cm
+            A[row, row] = -(cm + cp)
+            A[row, row + 1] = cp
 
-        # Node N-1 at r1: conduction in = contact resistance out
+        # Node N-1 at r1
         r_mh = 0.5 * (r_L1[N-2] + r_L1[N-1])
         km = k1(0.5 * (T1c[N-2] + T1c[N-1]))
         cm = r_mh**2 * km / dr1
         cr = r1**2 / RC12_PP
         row = i1 + N - 1
-        A[row, row - 1] =  cm
-        A[row, row]     = -(cm + cr)
-        A[row, i2]      =  cr
+        A[row, row - 1] =cm
+        A[row, row] = -(cm + cr)
+        A[row, i2] =cr
 
-        # Layer 2 (Aerogel): node 0 — contact resistance in = conduction out
+        # Layer 2
         r_ph = 0.5 * (r_L2[0] + r_L2[1])
         kp = k2(0.5 * (T2c[0] + T2c[1]))
         cp = r_ph**2 * kp / dr2
-        cr = r1**2 / RC12_PP
+        cr = r1**2/RC12_PP
         A[i2, i1 + N - 1] =  cr
-        A[i2, i2]          = -(cr + cp)
-        A[i2, i2 + 1]     =  cp
+        A[i2, i2]  = -(cr + cp)
+        A[i2, i2 + 1] = cp
 
         # Interior nodes
         for i in range(1, N - 1):
             r_ph = 0.5 * (r_L2[i] + r_L2[i+1])
             r_mh = 0.5 * (r_L2[i] + r_L2[i-1])
-            kp = k2(0.5 * (T2c[i] + T2c[i+1]))
+            kp = k2(0.5* (T2c[i] + T2c[i+1]))
             km = k2(0.5 * (T2c[i] + T2c[i-1]))
             cp = r_ph**2 * kp / dr2
             cm = r_mh**2 * km / dr2
             row = i2 + i
-            A[row, row - 1] =  cm
-            A[row, row]     = -(cm + cp)
+            A[row, row -1] =  cm
+            A[row, row] = -(cm + cp)
             A[row, row + 1] =  cp
 
-        # Node N-1 at r2: conduction in = contact resistance out
+        # Node N-1 at r2
         r_mh = 0.5 * (r_L2[N-2] + r_L2[N-1])
-        km = k2(0.5 * (T2c[N-2] + T2c[N-1]))
+        km = k2(0.5* (T2c[N-2] + T2c[N-1]))
         cm = r_mh**2 * km / dr2
         cr = r2**2 / RC23_PP
         row = i2 + N - 1
-        A[row, row - 1] =  cm
-        A[row, row]     = -(cm + cr)
-        A[row, i3]      =  cr
+        A[row, row -1] =  cm
+        A[row, row] = -(cm + cr)
+        A[row, i3] = cr
 
-        # Layer 3 (CFRP): node 0 — contact resistance in = conduction out
+        # Layer 3 (CFRP)
         r_ph = 0.5 * (r_L3[0] + r_L3[1])
         kp = k3(0.5 * (T3c[0] + T3c[1]))
         cp = r_ph**2 * kp / dr3
-        cr = r2**2 / RC23_PP
-        A[i3, i2 + N - 1] =  cr
-        A[i3, i3]          = -(cr + cp)
-        A[i3, i3 + 1]     =  cp
+        cr = r2**2/RC23_PP
+        A[i3, i2 + N-1] = cr
+        A[i3, i3] = -(cr + cp)
+        A[i3, i3 + 1] = cp
 
         # Interior nodes
         for i in range(1, N - 1):
@@ -199,27 +192,26 @@ def solve(t2, Q_int=Q_INT_DEFAULT, N=20, tol=1e-6, max_iter=500, omega=1.0):
             cp = r_ph**2 * kp / dr3
             cm = r_mh**2 * km / dr3
             row = i3 + i
-            A[row, row - 1] =  cm
-            A[row, row]     = -(cm + cp)
-            A[row, row + 1] =  cp
+            A[row, row -1] = cm
+            A[row, row] = -(cm+ cp)
+            A[row, row + 1] = cp
 
-        # Node N-1 at r3: T = Ts
-        row = i3 + N - 1
+        # Node N-1 at r3; Ts
+        row =i3 + N - 1
         A[row, row] = 1.0
         b[row] = Ts
 
-        T_new = np.linalg.solve(A, b)
+        T_new =np.linalg.solve(A, b)
         T_vec = omega * T_new + (1.0 - omega) * T_old
 
-        if np.max(np.abs(T_vec - T_old)) < tol:
+        if np.max(np.abs(T_vec -T_old)) < tol:
             converged = True
             break
 
     if not converged:
-        print(f"WARNING: Picard did not converge in {max_iter} iterations "
-              f"(max dT = {np.max(np.abs(T_vec - T_old)):.2e} K)")
+        print(f"warning: Picard did not converge in {max_iter} iterations ")
 
-    Tg     = T_vec[0]
+    Tg = T_vec[0]
     T1_arr = T_vec[i1:i1+N]
     T2_arr = T_vec[i2:i2+N]
     T3_arr = T_vec[i3:i3+N]
@@ -231,7 +223,7 @@ def solve(t2, Q_int=Q_INT_DEFAULT, N=20, tol=1e-6, max_iter=500, omega=1.0):
     T2p = T3_arr[0]
 
     dTc12 = T1m - T1p
-    dTc23 = T2m - T2p
+    dTc23 = T2m- T2p
 
     r_profile = np.concatenate([r_L1, r_L2, r_L3])
     T_profile = np.concatenate([T1_arr, T2_arr, T3_arr])
@@ -253,11 +245,4 @@ def temperature_profile(sol):
 
 if __name__ == '__main__':
     sol = solve(t2=0.010)
-    print("Baseline (t2=10mm, Q_int=50W)")
-    print(f"Converged in {sol['iterations']} Picard iterations")
-    print(f"Tg = {sol['Tg']:.3f} K, {'PASS' if sol['Tg'] <= 360 else 'FAIL'}")
-    print(f"Tw = {sol['Tw']:.3f} K")
-    print(f"Ts = {sol['Ts']:.3f} K, {'PASS' if sol['Ts'] <= 450 else 'FAIL'}")
-    print(f"Q  = {sol['Q']:.1f} W")
-    print(f"dTc12 = {sol['dTc12']:.4f} K")
-    print(f"dTc23 = {sol['dTc23']:.4f} K")
+    
