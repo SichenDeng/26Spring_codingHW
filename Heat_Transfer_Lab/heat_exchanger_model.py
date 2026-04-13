@@ -157,12 +157,30 @@ else:
 # Misra & Gupta coil friction enhancement
 f_coil_ratio = 1 + 0.033 * (np.log10(De))**4 if De > 30 else 1.0
 f_tube = f_tube_straight * f_coil_ratio
-dP_hot = f_tube * (L_tube / d_i) * (rho_h * v_tube**2 / 2)
+dP_hot = 0.5*f_tube * (L_tube / d_i) * (rho_h * v_tube**2 / 2)
 dP_hot_kPa = dP_hot / 1000
 
-# ---- Pressure drop: shell side (Kern method) ----
+# ---- Pressure drop: shell side (improved: friction + baffle losses) ----
+
+# friction factor
 f_shell = 64.0 / Re_shell if Re_shell < 2300 else (0.790 * np.log(Re_shell) - 1.64)**(-2)
-dP_cold = f_shell * (D_shell / D_h_shell) * (N_baffles + 1) * (rho_c * v_shell**2 / 2)
+
+# effective flow length (zig-zag due to baffles)
+L_eff = (N_baffles + 1) * baffle_spacing
+
+# frictional loss
+dP_fric = f_shell * (L_eff / D_h_shell) * (rho_c * v_shell**2 / 2)
+
+# baffle-induced minor losses
+K_b = 1.0   # 推荐 0.5–2，可以调
+dP_baffle = N_baffles * K_b * (rho_c * v_shell**2 / 2)
+
+# entrance/exit + leak + turning losses（关键！！）
+K_extra = 2.0   # 推荐 1–5，根据实验调
+dP_extra = K_extra * (rho_c * v_shell**2 / 2)
+
+# total shell-side pressure drop
+dP_cold = dP_fric + dP_baffle + dP_extra
 dP_cold_kPa = dP_cold / 1000
 
 # ---- Output ----
