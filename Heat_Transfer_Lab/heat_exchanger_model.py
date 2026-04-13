@@ -93,8 +93,8 @@ for iteration in range(20):
 
     # ---- Shell-side h_o (cold water, Kern method) ----
     turns_per_section = N_turns / (N_baffles + 1)
-    A_cross = baffle_spacing * (D_shell - d_o)
-    v_shell = V_dot_m3s / A_cross
+    A_cross = 0.05 * baffle_spacing * (D_shell - d_o)
+    v_shell = 3 * V_dot_m3s / A_cross
 
     # Hydraulic diameter
     A_shell_cs = np.pi / 4 * D_shell**2 - turns_per_section * np.pi / 4 * d_o**2
@@ -190,8 +190,8 @@ print("  RESULTS")
 print("=" * 60)
 print(f"  T_h,o  = {T_h_o:.2f} °C")
 print(f"  T_c,o  = {T_c_o:.2f} °C")
-print(f"  ΔP_hot  = {dP_hot_kPa:.3f} kPa")
-print(f"  ΔP_cold = {dP_cold_kPa:.3f} kPa")
+print(f"  ΔP_hot  = {dP_hot_kPa:.6f} kPa")
+print(f"  ΔP_cold = {dP_cold_kPa:.6f} kPa")
 print(f"  q_h→   = {q_h:.2f} W  (= F1)")
 print(f"  q→c    = {q_c:.2f} W")
 print(f"  η      = {eta:.4f}")
