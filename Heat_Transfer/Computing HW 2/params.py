@@ -1,384 +1,269 @@
-"""
-params.py — Shared parameters and system assembly for 2D steady-state heat
-conduction in a solar panel cross-section (finite difference, energy balance).
-"""
+# Heat Transfer Computing HW 2 - parameters and system assembly for parts 2 and 3.
 
 import numpy as np
 from scipy.sparse import lil_matrix
+from scipy.sparse.linalg import spsolve
 
-# ---------------------------------------------------------------------------
 # Physical parameters
-# ---------------------------------------------------------------------------
-k_P   = 1.0     # W/(m·K)  — PV panel thermal conductivity
-k_A   = 205.0   # W/(m·K)  — aluminum thermal conductivity
-h     = 500.0   # W/(m²·K) — convection coefficient inside water channels
-q_pp  = 1500.0  # W/m²     — net radiation heat flux absorbed at top surface
+Nx, Ny = 226, 31
+dx = 0.002
 
-# ---------------------------------------------------------------------------
-# Geometry
-# ---------------------------------------------------------------------------
-L_x  = 0.45    # m — domain width
-L_y  = 0.06    # m — total domain height  (H_PV=0.02 m + H_Al=0.04 m)
-H_PV = 0.02    # m — PV layer thickness
-H_Al = 0.04    # m — aluminum layer thickness
+k_pv  = 1.0
+k_al  = 205.0
+h     = 500.0
+q_rad = 1500.0
 
-# ---------------------------------------------------------------------------
-# Grid  (uniform spacing Δ = 0.002 m)
-# ---------------------------------------------------------------------------
-NX  = 226          # nodes in x-direction (i = 0 … 225)
-NY  = 31           # nodes in y-direction (j = 0 … 30)
-D   = 0.002        # m — Δx = Δy = Δ
+q_term = q_rad * dx / k_pv
+Bi     = h * dx / k_al
 
-# Derived convenience
-x_nodes = np.arange(NX) * D   # x-coordinates of nodes
-y_nodes = np.arange(NY) * D   # y-coordinates (j=0 is top surface)
+# Geometry (row indices)
+J_INTERFACE = 10          # PV/Al interface  (y = 0.02 m)
+J_BOT       = Ny - 1      # bottom row       (y = 0.06 m)
 
-# Layer boundary row index
-J_INT = 10   # j index of PV/Al interface  (y = 0.02 m)
+CH_J_TOP = 15             # channel top wall    (y = 0.03 m)
+CH_J_BOT = 25             # channel bottom wall (y = 0.05 m)
 
-# ---------------------------------------------------------------------------
-# Channel geometry — five rectangular water channels in the aluminum layer
-#   j_top = 15  (y = 0.030 m),  j_bot = 25  (y = 0.050 m)
-#   void nodes: strictly interior, i.e. iL < i < iR  AND  j_top < j < j_bot
-# ---------------------------------------------------------------------------
-J_CH_TOP = 15
-J_CH_BOT = 25
-
-# Left and right wall column indices for each of the 5 channels
-CH_IL = [50,  80,  110, 140, 170]
-CH_IR = [55,  85,  115, 145, 175]
-
-# ---------------------------------------------------------------------------
-# Helper: classify a node as void (inside a channel cavity)
-# ---------------------------------------------------------------------------
-def is_void(i, j):
-    """Return True if node (i,j) is strictly inside a channel void (no material)."""
-    if J_CH_TOP < j < J_CH_BOT:
-        for iL, iR in zip(CH_IL, CH_IR):
-            if iL < i < iR:
-                return True
-    return False
+CH_X_STARTS = [0.10, 0.16, 0.22, 0.28, 0.34]
+CH_WIDTH    = 0.01
 
 
-# ---------------------------------------------------------------------------
-# Helper: classify channel-wall nodes
-#   Returns a string tag or None if the node is not on a channel wall.
-#   Priority: corner > top/bottom wall > left/right wall
-# ---------------------------------------------------------------------------
-def get_wall_type(i, j):
-    """
-    Classify node (i,j) with respect to channel walls.
-    Returns one of:
-        'corner_TL', 'corner_TR', 'corner_BL', 'corner_BR'
-        'wall_top', 'wall_bot', 'wall_left', 'wall_right'
-        None  — not a channel wall node
-    """
-    for iL, iR in zip(CH_IL, CH_IR):
-        # corner nodes (Δ/2 × Δ/2 control volume, two convection faces)
-        if j == J_CH_TOP and i == iL:
-            return 'corner_TL'
-        if j == J_CH_TOP and i == iR:
-            return 'corner_TR'
-        if j == J_CH_BOT and i == iL:
-            return 'corner_BL'
-        if j == J_CH_BOT and i == iR:
-            return 'corner_BR'
-        # flat-wall nodes (Δ/2 × Δ control volume, one convection face)
-        if j == J_CH_TOP and iL < i < iR:
-            return 'wall_top'
-        if j == J_CH_BOT and iL < i < iR:
-            return 'wall_bot'
-        if i == iL and J_CH_TOP < j < J_CH_BOT:
-            return 'wall_left'
-        if i == iR and J_CH_TOP < j < J_CH_BOT:
-            return 'wall_right'
-    return None
-
-
-# ---------------------------------------------------------------------------
-# Build node map: assign a row index in the linear system to every live node.
-# Void nodes get index -1.
-# ---------------------------------------------------------------------------
 def build_node_map():
-    """
-    Returns
-    -------
-    NODE_MAP  : (NY, NX) int array  — row index for each (j, i), -1 if void
-    NODE_LIST : list of (i, j) tuples in row-index order
-    """
-    nm   = np.full((NY, NX), -1, dtype=int)
-    lst  = []
-    idx  = 0
-    for j in range(NY):
-        for i in range(NX):
-            if not is_void(i, j):
-                nm[j, i] = idx
-                lst.append((i, j))
-                idx += 1
-    return nm, lst
+    nm = np.zeros((Ny, Nx), dtype=int)
+
+    for j in range(Ny):
+        for i in range(Nx):
+            # Top PV surface - radiation flux
+            if j == 0:
+                if   i == 0:      nm[j, i] = 1
+                elif i == Nx - 1: nm[j, i] = 3
+                else:             nm[j, i] = 2
+
+            # PV interior rows
+            elif 0 < j < J_INTERFACE:
+                if   i == 0:      nm[j, i] = 4
+                elif i == Nx - 1: nm[j, i] = 6
+                else:             nm[j, i] = 5
+
+            # PV / Al interface
+            elif j == J_INTERFACE:
+                if   i == 0:      nm[j, i] = 7
+                elif i == Nx - 1: nm[j, i] = 9
+                else:             nm[j, i] = 8
+
+            # Al interior rows
+            elif J_INTERFACE < j < J_BOT:
+                if   i == 0:      nm[j, i] = 10
+                elif i == Nx - 1: nm[j, i] = 12
+                else:             nm[j, i] = 11
+
+            # Bottom row - insulated
+            elif j == J_BOT:
+                if   i == 0:      nm[j, i] = 14
+                elif i == Nx - 1: nm[j, i] = 15
+                else:             nm[j, i] = 13
+
+    # Overwrite channel nodes
+    for x_start in CH_X_STARTS:
+        i_ws = int(round(x_start / dx))
+        i_we = int(round((x_start + CH_WIDTH) / dx))
+        j_ws, j_we = CH_J_TOP, CH_J_BOT
+
+        nm[j_ws + 1:j_we, i_ws + 1:i_we] = 99   # fluid interior
+
+        nm[j_ws,          i_ws + 1:i_we] = 16   # top  wall
+        nm[j_we,          i_ws + 1:i_we] = 17   # bot  wall
+        nm[j_ws + 1:j_we, i_ws         ] = 18   # left wall
+        nm[j_ws + 1:j_we, i_we         ] = 19   # right wall
+
+        nm[j_ws, i_ws] = 20   # TL solid corner
+        nm[j_ws, i_we] = 21   # TR solid corner
+        nm[j_we, i_ws] = 22   # BL solid corner
+        nm[j_we, i_we] = 23   # BR solid corner
+
+    return nm
 
 
-NODE_MAP, NODE_LIST = build_node_map()
-N_NODES = len(NODE_LIST)
+def build_system(Tw):
+    NodeMap = build_node_map()
+    N = Nx * Ny
+    A = lil_matrix((N, N))
+    b = np.zeros(N)
 
+    def idx(i, j):
+        return j * Nx + i
 
-# ---------------------------------------------------------------------------
-# Assemble the sparse linear system  A · T_vec = b
-# ---------------------------------------------------------------------------
-def build_system(T_w):
-    """
-    Assemble the N_NODES × N_NODES sparse system for the given coolant
-    temperature T_w (°C).
+    for j in range(Ny):
+        for i in range(Nx):
+            p = idx(i, j)
+            t = NodeMap[j, i]
 
-    Returns
-    -------
-    A : scipy CSR matrix
-    b : 1-D numpy array
-    """
-    A  = lil_matrix((N_NODES, N_NODES))
-    b  = np.zeros(N_NODES)
-    nm = NODE_MAP
+            # Top PV surface (radiation flux)
+            if t == 1:     # top-left corner
+                A[p, p] = -2
+                A[p, idx(i + 1, j)] = 1
+                A[p, idx(i, j + 1)] = 1
+                b[p] = -q_term
 
-    hDkA  = h * D / k_A          # dimensionless convection parameter
-    k_avg = 0.5 * (k_P + k_A)    # arithmetic mean conductivity at interface
+            elif t == 2:   # top plane
+                A[p, p] = -4
+                A[p, idx(i - 1, j)] = 1
+                A[p, idx(i + 1, j)] = 1
+                A[p, idx(i, j + 1)] = 2
+                b[p] = -2 * q_term
 
-    def row(i, j):
-        return nm[j, i]
+            elif t == 3:   # top-right corner
+                A[p, p] = -2
+                A[p, idx(i - 1, j)] = 1
+                A[p, idx(i, j + 1)] = 1
+                b[p] = -q_term
 
-    def _fill_wall(A, b, r, i, j, wtype, hDkA, T_w):
-        """
-        Energy-balance FD equations for the eight channel-wall node types.
-        Each derives from integrating the heat equation over the appropriate
-        half or quarter control volume with one or two convective faces.
-        """
-        if wtype == 'wall_top':
-            # Top wall: Δ×Δ/2 CV, convection on bottom face into channel
-            # 2·T[i,j-1] + T[i-1,j] + T[i+1,j] − (4 + 2hΔ/k_A)·T[i,j] = −2(hΔ/k_A)·T_w
-            A[r, row(i,   j-1)] += 2.0
-            A[r, row(i-1, j  )] += 1.0
-            A[r, row(i+1, j  )] += 1.0
-            A[r, r             ] += -(4.0 + 2.0*hDkA)
-            b[r]                 += -2.0*hDkA*T_w
+            # PV insulated sides / interior
+            elif t == 4:
+                A[p, p] = -4
+                A[p, idx(i + 1, j)] = 2
+                A[p, idx(i, j - 1)] = 1
+                A[p, idx(i, j + 1)] = 1
 
-        elif wtype == 'wall_bot':
-            # Bottom wall: Δ×Δ/2 CV, convection on top face into channel
-            # 2·T[i,j+1] + T[i-1,j] + T[i+1,j] − (4 + 2hΔ/k_A)·T[i,j] = −2(hΔ/k_A)·T_w
-            A[r, row(i,   j+1)] += 2.0
-            A[r, row(i-1, j  )] += 1.0
-            A[r, row(i+1, j  )] += 1.0
-            A[r, r             ] += -(4.0 + 2.0*hDkA)
-            b[r]                 += -2.0*hDkA*T_w
+            elif t == 5:
+                A[p, p] = -4
+                A[p, idx(i - 1, j)] = 1
+                A[p, idx(i + 1, j)] = 1
+                A[p, idx(i, j - 1)] = 1
+                A[p, idx(i, j + 1)] = 1
 
-        elif wtype == 'wall_left':
-            # Left wall: Δ/2×Δ CV, convection on right face into channel
-            # 2·T[i-1,j] + T[i,j-1] + T[i,j+1] − (4 + 2hΔ/k_A)·T[i,j] = −2(hΔ/k_A)·T_w
-            A[r, row(i-1, j  )] += 2.0
-            A[r, row(i,   j-1)] += 1.0
-            A[r, row(i,   j+1)] += 1.0
-            A[r, r             ] += -(4.0 + 2.0*hDkA)
-            b[r]                 += -2.0*hDkA*T_w
+            elif t == 6:
+                A[p, p] = -4
+                A[p, idx(i - 1, j)] = 2
+                A[p, idx(i, j - 1)] = 1
+                A[p, idx(i, j + 1)] = 1
 
-        elif wtype == 'wall_right':
-            # Right wall: Δ/2×Δ CV, convection on left face into channel
-            # 2·T[i+1,j] + T[i,j-1] + T[i,j+1] − (4 + 2hΔ/k_A)·T[i,j] = −2(hΔ/k_A)·T_w
-            A[r, row(i+1, j  )] += 2.0
-            A[r, row(i,   j-1)] += 1.0
-            A[r, row(i,   j+1)] += 1.0
-            A[r, r             ] += -(4.0 + 2.0*hDkA)
-            b[r]                 += -2.0*hDkA*T_w
+            # PV / Al interface
+            elif t == 7:
+                A[p, p] = -2 * (k_pv + k_al)
+                A[p, idx(i + 1, j)] = k_pv + k_al
+                A[p, idx(i, j - 1)] = k_pv
+                A[p, idx(i, j + 1)] = k_al
 
-        elif wtype == 'corner_TL':
-            # Top-left corner: Δ/2×Δ/2 CV, convection on bottom AND right faces
-            # T[iL,j-1] + T[iL-1,j] − (2 + 2hΔ/k_A)·T[iL,j] = −2(hΔ/k_A)·T_w
-            A[r, row(i,   j-1)] += 1.0
-            A[r, row(i-1, j  )] += 1.0
-            A[r, r             ] += -(2.0 + 2.0*hDkA)
-            b[r]                 += -2.0*hDkA*T_w
+            elif t == 8:
+                A[p, p] = -2 * (k_pv + k_al)
+                A[p, idx(i - 1, j)] = (k_pv + k_al) / 2
+                A[p, idx(i + 1, j)] = (k_pv + k_al) / 2
+                A[p, idx(i, j - 1)] = k_pv
+                A[p, idx(i, j + 1)] = k_al
 
-        elif wtype == 'corner_TR':
-            # Top-right corner: Δ/2×Δ/2 CV, convection on bottom AND left faces
-            # T[iR,j-1] + T[iR+1,j] − (2 + 2hΔ/k_A)·T[iR,j] = −2(hΔ/k_A)·T_w
-            A[r, row(i,   j-1)] += 1.0
-            A[r, row(i+1, j  )] += 1.0
-            A[r, r             ] += -(2.0 + 2.0*hDkA)
-            b[r]                 += -2.0*hDkA*T_w
+            elif t == 9:
+                A[p, p] = -2 * (k_pv + k_al)
+                A[p, idx(i - 1, j)] = k_pv + k_al
+                A[p, idx(i, j - 1)] = k_pv
+                A[p, idx(i, j + 1)] = k_al
 
-        elif wtype == 'corner_BL':
-            # Bottom-left corner: Δ/2×Δ/2 CV, convection on top AND right faces
-            # T[iL,j+1] + T[iL-1,j] − (2 + 2hΔ/k_A)·T[iL,j] = −2(hΔ/k_A)·T_w
-            A[r, row(i,   j+1)] += 1.0
-            A[r, row(i-1, j  )] += 1.0
-            A[r, r             ] += -(2.0 + 2.0*hDkA)
-            b[r]                 += -2.0*hDkA*T_w
+            # Al insulated sides / interior
+            elif t == 10:
+                A[p, p] = -4
+                A[p, idx(i + 1, j)] = 2
+                A[p, idx(i, j - 1)] = 1
+                A[p, idx(i, j + 1)] = 1
 
-        elif wtype == 'corner_BR':
-            # Bottom-right corner: Δ/2×Δ/2 CV, convection on top AND left faces
-            # T[iR,j+1] + T[iR+1,j] − (2 + 2hΔ/k_A)·T[iR,j] = −2(hΔ/k_A)·T_w
-            A[r, row(i,   j+1)] += 1.0
-            A[r, row(i+1, j  )] += 1.0
-            A[r, r             ] += -(2.0 + 2.0*hDkA)
-            b[r]                 += -2.0*hDkA*T_w
+            elif t == 11:
+                A[p, p] = -4
+                A[p, idx(i - 1, j)] = 1
+                A[p, idx(i + 1, j)] = 1
+                A[p, idx(i, j - 1)] = 1
+                A[p, idx(i, j + 1)] = 1
 
-    for idx, (i, j) in enumerate(NODE_LIST):
-        r = idx   # row index equals position in NODE_LIST by construction
+            elif t == 12:
+                A[p, p] = -4
+                A[p, idx(i - 1, j)] = 2
+                A[p, idx(i, j - 1)] = 1
+                A[p, idx(i, j + 1)] = 1
 
-        # ------------------------------------------------------------------
-        # Priority 1: channel wall nodes (override all other classifications)
-        # ------------------------------------------------------------------
-        wtype = get_wall_type(i, j)
-        if wtype is not None:
-            _fill_wall(A, b, r, i, j, wtype, hDkA, T_w)
-            continue
+            # Bottom insulated
+            elif t == 13:
+                A[p, p] = -4
+                A[p, idx(i - 1, j)] = 1
+                A[p, idx(i + 1, j)] = 1
+                A[p, idx(i, j - 1)] = 2
 
-        # ------------------------------------------------------------------
-        # Priority 2: domain corners (quarter-node, two insulated/flux faces)
-        # ------------------------------------------------------------------
-        if i == 0 and j == 0:
-            # Top-left corner: flux q_pp on top, insulated on left
-            # T[1,0] + T[0,1] − 2·T[0,0] = −q_pp·Δ/k_P
-            A[r, row(1, 0)] += 1.0
-            A[r, row(0, 1)] += 1.0
-            A[r, r         ] += -2.0
-            b[r]              = -q_pp * D / k_P
-            continue
+            elif t == 14:
+                A[p, p] = -2
+                A[p, idx(i + 1, j)] = 1
+                A[p, idx(i, j - 1)] = 1
 
-        if i == NX-1 and j == 0:
-            # Top-right corner: flux q_pp on top, insulated on right
-            A[r, row(NX-2, 0)] += 1.0
-            A[r, row(NX-1, 1)] += 1.0
-            A[r, r             ] += -2.0
-            b[r]                 = -q_pp * D / k_P
-            continue
+            elif t == 15:
+                A[p, p] = -2
+                A[p, idx(i - 1, j)] = 1
+                A[p, idx(i, j - 1)] = 1
 
-        if i == 0 and j == NY-1:
-            # Bottom-left corner: insulated on bottom and left
-            A[r, row(1,    NY-1)] += 1.0
-            A[r, row(0,    NY-2)] += 1.0
-            A[r, r               ] += -2.0
-            b[r]                   = 0.0
-            continue
+            # Channel flat walls - convection
+            elif t == 16:  # top wall, fluid below
+                A[p, p] = -2 * (Bi + 2)
+                A[p, idx(i - 1, j)] = 1
+                A[p, idx(i + 1, j)] = 1
+                A[p, idx(i, j - 1)] = 2
+                b[p] = -2 * Bi * Tw
 
-        if i == NX-1 and j == NY-1:
-            # Bottom-right corner: insulated on bottom and right
-            A[r, row(NX-2, NY-1)] += 1.0
-            A[r, row(NX-1, NY-2)] += 1.0
-            A[r, r                ] += -2.0
-            b[r]                    = 0.0
-            continue
+            elif t == 17:  # bottom wall, fluid above
+                A[p, p] = -2 * (Bi + 2)
+                A[p, idx(i - 1, j)] = 1
+                A[p, idx(i + 1, j)] = 1
+                A[p, idx(i, j + 1)] = 2
+                b[p] = -2 * Bi * Tw
 
-        # ------------------------------------------------------------------
-        # Priority 3: top surface interior (j=0, absorbs solar flux)
-        # ------------------------------------------------------------------
-        if j == 0:
-            # Half-CV: flux q_pp on top face, conduction on other three faces
-            # T[i-1,0] + T[i+1,0] + 2·T[i,1] − 4·T[i,0] = −2·q_pp·Δ/k_P
-            A[r, row(i-1, 0)] += 1.0
-            A[r, row(i+1, 0)] += 1.0
-            A[r, row(i,   1)] += 2.0
-            A[r, r           ] += -4.0
-            b[r]               = -2.0 * q_pp * D / k_P
-            continue
+            elif t == 18:  # left wall, fluid to the right
+                A[p, p] = -2 * (Bi + 2)
+                A[p, idx(i - 1, j)] = 2
+                A[p, idx(i, j - 1)] = 1
+                A[p, idx(i, j + 1)] = 1
+                b[p] = -2 * Bi * Tw
 
-        # ------------------------------------------------------------------
-        # Priority 4: bottom surface interior (j=30, insulated)
-        # ------------------------------------------------------------------
-        if j == NY-1:
-            # Half-CV: insulated bottom face
-            # T[i-1,NY-1] + T[i+1,NY-1] + 2·T[i,NY-2] − 4·T[i,NY-1] = 0
-            A[r, row(i-1, NY-1)] += 1.0
-            A[r, row(i+1, NY-1)] += 1.0
-            A[r, row(i,   NY-2)] += 2.0
-            A[r, r               ] += -4.0
-            b[r]                   = 0.0
-            continue
+            elif t == 19:  # right wall, fluid to the left
+                A[p, p] = -2 * (Bi + 2)
+                A[p, idx(i + 1, j)] = 2
+                A[p, idx(i, j - 1)] = 1
+                A[p, idx(i, j + 1)] = 1
+                b[p] = -2 * Bi * Tw
 
-        # ------------------------------------------------------------------
-        # Priority 5: left edge (i=0), non-corner
-        # ------------------------------------------------------------------
-        if i == 0:
-            if j == J_INT:
-                # Interface left edge: half-CV in x, k-weighted normal fluxes
-                # k_P·T[0,9] + k_A·T[0,11] + (k_P+k_A)·T[1,10] − 2(k_P+k_A)·T[0,10] = 0
-                A[r, row(0, J_INT-1)] += k_P
-                A[r, row(0, J_INT+1)] += k_A
-                A[r, row(1, J_INT  )] += (k_P + k_A)
-                A[r, r               ] += -2.0 * (k_P + k_A)
-                b[r]                   = 0.0
-            else:
-                # Insulated left face: mirror image gives factor of 2
-                # 2·T[1,j] + T[0,j-1] + T[0,j+1] − 4·T[0,j] = 0
-                A[r, row(1, j  )] += 2.0
-                A[r, row(0, j-1)] += 1.0
-                A[r, row(0, j+1)] += 1.0
-                A[r, r           ] += -4.0
-                b[r]               = 0.0
-            continue
+            # Channel solid internal corners - convection
+            elif t == 20:  # TL, fluid at bottom-right
+                A[p, p] = -2 * (Bi + 3)
+                A[p, idx(i - 1, j)] = 2
+                A[p, idx(i, j - 1)] = 2
+                A[p, idx(i + 1, j)] = 1
+                A[p, idx(i, j + 1)] = 1
+                b[p] = -2 * Bi * Tw
 
-        # ------------------------------------------------------------------
-        # Priority 6: right edge (i=NX-1), non-corner
-        # ------------------------------------------------------------------
-        if i == NX-1:
-            if j == J_INT:
-                # Interface right edge: symmetric to left interface edge
-                A[r, row(NX-1, J_INT-1)] += k_P
-                A[r, row(NX-1, J_INT+1)] += k_A
-                A[r, row(NX-2, J_INT  )] += (k_P + k_A)
-                A[r, r                  ] += -2.0 * (k_P + k_A)
-                b[r]                      = 0.0
-            else:
-                # Insulated right face
-                A[r, row(NX-2, j  )] += 2.0
-                A[r, row(NX-1, j-1)] += 1.0
-                A[r, row(NX-1, j+1)] += 1.0
-                A[r, r              ] += -4.0
-                b[r]                  = 0.0
-            continue
+            elif t == 21:  # TR, fluid at bottom-left
+                A[p, p] = -2 * (Bi + 3)
+                A[p, idx(i + 1, j)] = 2
+                A[p, idx(i, j - 1)] = 2
+                A[p, idx(i - 1, j)] = 1
+                A[p, idx(i, j + 1)] = 1
+                b[p] = -2 * Bi * Tw
 
-        # ------------------------------------------------------------------
-        # Priority 7: PV/Al interface interior (j=10, i=1..224)
-        # ------------------------------------------------------------------
-        if j == J_INT:
-            # Full-size CV straddling two materials; normal fluxes use actual k,
-            # lateral fluxes use arithmetic mean k_avg for parallel conduction
-            # k_P·T[i,9] + k_A·T[i,11] + k_avg·(T[i-1,10]+T[i+1,10]) − 2(k_P+k_A)·T[i,10] = 0
-            A[r, row(i,   J_INT-1)] += k_P
-            A[r, row(i,   J_INT+1)] += k_A
-            A[r, row(i-1, J_INT  )] += k_avg
-            A[r, row(i+1, J_INT  )] += k_avg
-            A[r, r                 ] += -2.0 * (k_P + k_A)
-            b[r]                     = 0.0
-            continue
+            elif t == 22:  # BL, fluid at top-right
+                A[p, p] = -2 * (Bi + 3)
+                A[p, idx(i - 1, j)] = 2
+                A[p, idx(i, j + 1)] = 2
+                A[p, idx(i + 1, j)] = 1
+                A[p, idx(i, j - 1)] = 1
+                b[p] = -2 * Bi * Tw
 
-        # ------------------------------------------------------------------
-        # Priority 8: fully interior node (PV or aluminum bulk)
-        # ------------------------------------------------------------------
-        # Standard 5-point Laplacian: sum of four neighbours − 4·T[i,j] = 0
-        A[r, row(i-1, j  )] += 1.0
-        A[r, row(i+1, j  )] += 1.0
-        A[r, row(i,   j-1)] += 1.0
-        A[r, row(i,   j+1)] += 1.0
-        A[r, r              ] += -4.0
-        b[r]                  = 0.0
+            elif t == 23:  # BR, fluid at top-left
+                A[p, p] = -2 * (Bi + 3)
+                A[p, idx(i + 1, j)] = 2
+                A[p, idx(i, j + 1)] = 2
+                A[p, idx(i - 1, j)] = 1
+                A[p, idx(i, j - 1)] = 1
+                b[p] = -2 * Bi * Tw
+
+            # Fluid dummy
+            elif t == 99:
+                A[p, p] = 1
+                b[p] = Tw
 
     return A.tocsr(), b
 
 
-
-
-# ---------------------------------------------------------------------------
-# Map the solution vector back to the 2-D (NY × NX) field
-# ---------------------------------------------------------------------------
-def reconstruct_field(T_vec):
-    """
-    Parameters
-    ----------
-    T_vec : 1-D array of length N_NODES
-
-    Returns
-    -------
-    T_field : (NY, NX) float array — NaN where void
-    """
-    T_field = np.full((NY, NX), np.nan)
-    valid = NODE_MAP >= 0
-    T_field[valid] = T_vec[NODE_MAP[valid]]
-    return T_field
+def solve_system(Tw):
+    A, b = build_system(Tw)
+    return spsolve(A, b).reshape((Ny, Nx))

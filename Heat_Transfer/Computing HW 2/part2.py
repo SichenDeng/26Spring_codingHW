@@ -1,105 +1,66 @@
-"""
-part2.py — Solve the 2D steady-state heat conduction problem for T_w = 20 °C
-and visualise the temperature distribution.
-"""
-
 import numpy as np
 import matplotlib.pyplot as plt
-import matplotlib.patches as patches
-from scipy.sparse.linalg import spsolve
 
-from params import (
-    NX, NY, D, J_INT, J_CH_TOP, J_CH_BOT, CH_IL, CH_IR,
-    x_nodes, y_nodes, N_NODES,
-    build_system, reconstruct_field,
-)
+from params import (Nx, Ny, dx, build_node_map, solve_system,
+                    CH_X_STARTS, CH_WIDTH, CH_J_TOP, CH_J_BOT)
 
-# ---------------------------------------------------------------------------
-# Solve
-# ---------------------------------------------------------------------------
-T_w = 20.0   # °C — coolant temperature (Part 2)
+T_PANEL_LIMIT = 35.0
 
-A, b = build_system(T_w)
-T_vec = spsolve(A, b)
-T_field = reconstruct_field(T_vec)
+T_w = 20.0
+T = solve_system(T_w)
 
-# Location of maximum temperature
-T_max = np.nanmax(T_field)
-jmax, imax = np.unravel_index(np.nanargmax(T_field), T_field.shape)
-x_max = x_nodes[imax]
-y_max = y_nodes[jmax]
+NodeMap = build_node_map()
+T_solid = np.where(NodeMap == 99, np.nan, T)
 
-print(f"Maximum temperature : {T_max:.4f} °C")
-print(f"Location            : x = {x_max:.4f} m,  y = {y_max:.4f} m")
+# Hot-spot
+T_max = np.nanmax(T_solid)
+T_min = np.nanmin(T_solid)
+jmax, imax = np.unravel_index(np.nanargmax(T_solid), T_solid.shape)
+x_max, y_max = imax * dx, jmax * dx
 
-# ---------------------------------------------------------------------------
+# Tw,max from the linear offset
+Tw_max = T_PANEL_LIMIT - (T_max - T_w)
+
+# Shared colorbar range covering both Part 2 and Part 3 fields
+vmin = min(T_min, T_min + (Tw_max - T_w))
+vmax = max(T_max, T_max + (Tw_max - T_w))
+
+print("--- Problem 2 ---")
+print(f"Tw    = {T_w:.2f} C")
+print(f"Tmax  = {T_max:.4f} C   at  (x, y) = ({x_max:.4f}, {y_max:.4f}) m")
+
 # Plot
-# ---------------------------------------------------------------------------
-fig, ax = plt.subplots(figsize=(12, 4))
+X = np.linspace(0.0, (Nx - 1) * dx, Nx)
+Y = np.linspace(0.0, (Ny - 1) * dx, Ny)
+Y_SCALE = 4.0
+levels = np.linspace(vmin, vmax, 80)
 
-X, Y = np.meshgrid(x_nodes, y_nodes)
+fig, ax = plt.subplots(figsize=(13, 5.0))
+cf = ax.contourf(X, Y, T_solid, levels=levels, cmap='jet',
+                 vmin=vmin, vmax=vmax, extend='both')
 
-# Fill NaN (channel voids) with interpolated values for smooth contour plotting
-T_plot = T_field.copy()
-from scipy.ndimage import generic_filter
-mask = np.isnan(T_plot)
-if mask.any():
-    # Fill void NaNs with nearest valid neighbor average for contour rendering
-    from scipy.interpolate import NearestNDInterpolator
-    valid = ~mask
-    coords = np.array(np.where(valid)).T
-    values = T_plot[valid]
-    interp = NearestNDInterpolator(coords, values)
-    void_coords = np.array(np.where(mask)).T
-    T_plot[mask] = interp(void_coords)
+for x0 in CH_X_STARTS:
+    ax.add_patch(plt.Rectangle((x0, CH_J_TOP * dx),
+                               CH_WIDTH, (CH_J_BOT - CH_J_TOP) * dx,
+                               fill=False, edgecolor='white',
+                               linewidth=0.8, linestyle='--'))
+ax.axhline(10 * dx, color='white', linewidth=0.6, linestyle=':')
 
-# Filled contour plot with contour lines to show curvature
-levels = np.linspace(np.nanmin(T_field), np.nanmax(T_field), 30)
-cf = ax.contourf(X, Y, T_plot, levels=levels, cmap='hot')
-# Add contour lines to make the curvature visible
-cs = ax.contour(X, Y, T_plot, levels=levels, colors='k', linewidths=0.3, alpha=0.5)
-cbar = fig.colorbar(cf, ax=ax)
-cbar.set_label('Temperature (°C)')
-
-# Invert y-axis so j=0 (top surface) appears at the top of the plot
+ax.set_aspect(Y_SCALE)
 ax.invert_yaxis()
-
-# PV / Al interface — cyan dashed horizontal line at y = J_INT * D
-y_int = J_INT * D
-ax.axhline(y=y_int, color='cyan', linestyle='--', linewidth=1.2,
-           label=f'PV/Al interface  (y = {y_int*100:.0f} cm)')
-
-# Water channel regions — blue filled rectangles
-y_ch_top = J_CH_TOP * D
-y_ch_bot = J_CH_BOT * D
-ch_height = y_ch_bot - y_ch_top
-first_ch  = True
-for iL, iR in zip(CH_IL, CH_IR):
-    x_ch_left  = iL * D
-    ch_width   = (iR - iL) * D
-    label = 'Water channels' if first_ch else None
-    rect = patches.Rectangle(
-        (x_ch_left, y_ch_top), ch_width, ch_height,
-        linewidth=1, edgecolor='blue', facecolor='blue', alpha=0.5,
-        label=label,
-    )
-    ax.add_patch(rect)
-    first_ch = False
-
-# Maximum temperature marker
-ax.plot(x_max, y_max, marker='*', markersize=12, color='lime',
-        markeredgecolor='black', markeredgewidth=0.5,
-        label=f'T_max = {T_max:.2f} °C')
-
 ax.set_xlabel('x (m)')
 ax.set_ylabel('y (m)')
-ax.set_title('2D Temperature Distribution — Solar Panel Cross-Section (T_w = 20 °C)')
-ax.legend(loc='upper right', fontsize=8)
+ax.set_title(f'Temperature distribution  ($T_w$ = {T_w:.0f} °C,  y stretched {Y_SCALE:g}x)')
+
+cbar = fig.colorbar(cf, ax=ax, pad=0.015, fraction=0.03)
+cbar.set_label('T (°C)')
+
+ax.plot(x_max, y_max, 'kx', markersize=10, markeredgewidth=2)
+ax.annotate(f'$T_{{max}}$ = {T_max:.2f} °C',
+            xy=(x_max, y_max),
+            xytext=(x_max - 0.09, y_max + 0.008),
+            fontsize=10,
+            arrowprops=dict(arrowstyle='->', color='black', lw=1))
 
 fig.tight_layout()
-fig.savefig(
-    '/Users/sichendeng/JHU/26Spring/26Spring_codingHW/Heat_Transfer/Computing HW 2/temperature_distribution.png',
-    dpi=150,
-)
 plt.show()
-print("Figure saved: temperature_distribution.png")
